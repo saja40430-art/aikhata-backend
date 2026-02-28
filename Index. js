@@ -1,0 +1,62 @@
+const express = require('express');
+const cors = require('cors');
+const Razorpay = require('razorpay');
+const admin = require('firebase-admin');
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+if (!admin.apps.length) {
+    const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
+    admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount),
+        databaseURL: "https://web-and-app-a43ce-default-rtdb.firebaseio.com"
+    });
+}
+
+const razorpay = new Razorpay({
+    key_id: process.env.RAZORPAY_KEY_ID,
+    key_secret: process.env.RAZORPAY_KEY_SECRET
+});
+
+app.post('/create-order', async (req, res) => {
+    const { amount, memoId, uid } = req.body;
+    try {
+        const options = {
+            amount: amount * 100,
+            currency: "INR",
+            receipt: memoId,
+            notes: { memoId: memoId, uid: uid }
+        };
+        const order = await razorpay.orders.create(options);
+        res.json(order);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/webhook', async (req, res) => {
+    try {
+        const data = req.body.payload.payment.entity;
+        if (data.status === 'captured') {
+            const memoId = data.notes.memoId;
+            const uid = data.notes.uid;
+            const amountPaid = data.amount / 100;
+
+            const memoRef = admin.database().ref(`users/${uid}/memos/${memoId}`);
+            const snapshot = await memoRef.once('value');
+            if (snapshot.exists()) {
+                await memoRef.update({
+                    received: amountPaid,
+                    due: 0
+                });
+            }
+        }
+        res.status(200).send('Webhook Received');
+    } catch (error) {
+        res.status(500).send('Error');
+    }
+});
+
+module.exports = app;
